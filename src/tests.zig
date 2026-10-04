@@ -502,24 +502,50 @@ test "opening a second article replaces the first" {
 
 // -- the seam ---------------------------------------------------------------
 
+/// Every name `source` passes to `@import`, one at a time.
+const Imports = struct {
+    rest: []const u8,
+
+    fn next(it: *Imports) ?[]const u8 {
+        const open = "@import(\"";
+        const at = std.mem.indexOf(u8, it.rest, open) orelse return null;
+        const name_start = at + open.len;
+        const name_end = std.mem.indexOfScalarPos(u8, it.rest, name_start, '"') orelse return null;
+        defer it.rest = it.rest[name_end..];
+        return it.rest[name_start..name_end];
+    }
+};
+
 test "the plumbing draws nothing: it does not import the toolkit" {
     const plumbing_files = [_][]const u8{
         @embedFile("plumbing/data.zig"),
         @embedFile("plumbing/nip23.zig"),
         @embedFile("plumbing/relays.zig"),
         @embedFile("plumbing/store.zig"),
+        @embedFile("plumbing/testkit.zig"),
+        @embedFile("plumbing/testrelay.zig"),
     };
-    inline for (plumbing_files) |source| {
-        try testing.expect(std.mem.indexOf(u8, source, "@import(\"native_sdk\")") == null);
+    for (plumbing_files) |source| {
+        var imports: Imports = .{ .rest = source };
+        while (imports.next()) |name| {
+            // `native_sdk` is the toolkit and `runner` is the window it opens.
+            if (std.mem.eql(u8, name, "native_sdk") or std.mem.eql(u8, name, "runner")) {
+                std.debug.print("a plumbing file imports \"{s}\"\n", .{name});
+                return error.PlumbingImportsTheToolkit;
+            }
+        }
     }
 }
 
 test "the interface reads the plumbing only through data.zig" {
     const interface_files = [_][]const u8{ @embedFile("model.zig"), @embedFile("display.zig") };
-    const plumbing_files = [_][]const u8{ "relays.zig", "store.zig", "nip23.zig" };
-    inline for (interface_files) |source| {
-        inline for (plumbing_files) |name| {
-            try testing.expect(std.mem.indexOf(u8, source, "@import(\"plumbing/" ++ name ++ "\")") == null);
+    for (interface_files) |source| {
+        var imports: Imports = .{ .rest = source };
+        while (imports.next()) |name| {
+            if (std.mem.indexOf(u8, name, "plumbing/") == null) continue;
+            if (std.mem.eql(u8, name, "plumbing/data.zig")) continue;
+            std.debug.print("the interface imports \"{s}\"; reach the plumbing through plumbing/data.zig\n", .{name});
+            return error.InterfaceBypassesTheSeam;
         }
     }
 }
