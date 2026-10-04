@@ -100,7 +100,7 @@ Everything under `src/plumbing/` is non-visual. None of it knows there is a wind
 
 `src/plumbing/data.zig` is the one small interface between the plumbing and whatever you draw. It has five calls, and your interface imports nothing else from `plumbing/`.
 
-- `articles(gpa, limit)`: the saved articles, newest published first.
+- `articles(gpa, limit)`: the `limit` most recently written saved articles, in order of the date they were published. The store picks which ones by `created_at`, so an old article edited yesterday is among them and can push out a newer one that was never edited.
 - `article(gpa, id)`: one saved article, whole, or null.
 - `refresh()`: asks the relays again, and returns at once.
 - `changes()`: a number that moves whenever a worker stored something or changed state.
@@ -165,7 +165,7 @@ For `build.zig.zon`, delete the `.fingerprint` line and run `zig build`. Zig pri
 
 ### Add signing, later
 
-This app does not sign anything, and that is deliberate. If you add posting, keep the key out of this process. [Notary](https://github.com/zig-nostr/notary) is a native NIP-46 signer that holds the key and asks before it signs, and the `nostr` library has NIP-46 on the client side (`nostr.nip46`). Your app sends a request to the signer and gets a signed event back, and any other NIP-46 signer works the same way. What you gain is that a bug in your interface can never leak a key it never had.
+This app does not sign anything, and that is deliberate. If you add posting, keep the key out of this process. [Notary](https://github.com/zig-nostr/notary) is a native NIP-46 signer that holds the key and asks before it signs. Your app sends it a request and gets a signed event back, and any other NIP-46 signer works the same way. The `nostr` library has the NIP-46 messages and their encrypted envelope (`nostr.nip46`); carrying them to the signer's relay and waiting for the answer is yours to write, on a worker thread like the ones in `relays.zig`. What you gain is that a bug in your interface can never leak a key it never had.
 
 ### Package it
 

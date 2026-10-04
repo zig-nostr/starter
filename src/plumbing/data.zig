@@ -56,9 +56,13 @@ pub const Data = struct {
         return self.fetcher.tally();
     }
 
-    /// Up to `limit` saved articles that have something in them, newest first
-    /// by the date they were published (not the date they were last edited).
-    /// The result owns its memory: call `deinit`.
+    /// The `limit` most recently written saved articles, without the empty
+    /// ones, in order of the date they were published (not the date they
+    /// were last edited). The store picks them by `created_at`, the only
+    /// date it indexes, so an old article edited yesterday can take a place
+    /// that a more recently published article without edits would otherwise
+    /// have. Relays pick the same way when they answer a `limit`. The result
+    /// owns its memory: call `deinit`.
     pub fn articles(self: *Data, gpa: std.mem.Allocator, limit: u32) !Articles {
         var result = try self.store.query(gpa, .{ .kinds = &[_]u16{nip23.kind}, .limit = limit });
         errdefer result.deinit();
