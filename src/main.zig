@@ -93,7 +93,9 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = @import("articles.zig");
+    _ = @import("relays.zig");
     _ = @import("store.zig");
     _ = @import("testkit.zig");
+    _ = @import("testrelay.zig");
     _ = @import("tests.zig");
 }
