@@ -1,4 +1,9 @@
-<!-- The whole view, as markup over the model in model.zig.
+<!-- YOUR APP'S INTERFACE: REPLACE IT.
+
+     This is a plain list and a plain reading view, here to show how markup
+     reads the model. It is not a design to build on. Draw your own screens.
+
+     The whole view, as markup over the model in model.zig.
 
      It never changes anything itself. `{name}` reads a field or a function of
      the model, and `on-press="open:{a.index}"` sends a message that `update`

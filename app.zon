@@ -2,7 +2,7 @@
     .id = "com.zig-nostr.starter",
     .name = "starter",
     .display_name = "Starter",
-    .description = "A native Nostr long-form article reader, and a template for your own app.",
+    .description = "The plumbing every native Nostr app needs, with a plain long-form article reader on top.",
     .version = "0.1.0",
     .icons = .{"assets/icon.png"},
     .platforms = .{ "macos", "linux" },

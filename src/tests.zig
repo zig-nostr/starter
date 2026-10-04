@@ -429,6 +429,30 @@ test "opening a second article replaces the first" {
     try testing.expectEqual(@as(usize, 1), model.pageNumber());
 }
 
+// -- the seam ---------------------------------------------------------------
+
+test "the plumbing draws nothing: it does not import the toolkit" {
+    const plumbing_files = [_][]const u8{
+        @embedFile("plumbing/data.zig"),
+        @embedFile("plumbing/nip23.zig"),
+        @embedFile("plumbing/relays.zig"),
+        @embedFile("plumbing/store.zig"),
+    };
+    inline for (plumbing_files) |source| {
+        try testing.expect(std.mem.indexOf(u8, source, "@import(\"native_sdk\")") == null);
+    }
+}
+
+test "the interface reads the plumbing only through data.zig" {
+    const interface_files = [_][]const u8{ @embedFile("model.zig"), @embedFile("display.zig") };
+    const plumbing_files = [_][]const u8{ "relays.zig", "store.zig", "nip23.zig" };
+    inline for (interface_files) |source| {
+        inline for (plumbing_files) |name| {
+            try testing.expect(std.mem.indexOf(u8, source, "@import(\"plumbing/" ++ name ++ "\")") == null);
+        }
+    }
+}
+
 // -- links ------------------------------------------------------------------
 
 test "only plain web links are opened" {

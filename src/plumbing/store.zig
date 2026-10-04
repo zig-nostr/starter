@@ -16,7 +16,7 @@ const nostr = @import("nostr");
 pub const Store = nostr.store.Store;
 
 /// The directory under `$HOME` that holds this app's data. Rename it with the
-/// app, or two apps built from this template will share a database.
+/// app, or two apps built from this repository will share a database.
 pub const data_dir = ".starter";
 
 /// LMDB reserves this much address space, not disk. Articles are text, so this
