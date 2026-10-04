@@ -4,7 +4,9 @@ A guide to this repository for people and coding agents who change it. For what 
 
 ## Project overview
 
-`starter` is a native Nostr app that doubles as a template: a read-only reader for NIP-23 long-form articles (kind 30023). It asks a few relays for articles, verifies and keeps them in a local LMDB database, lists them, and opens one for reading. It holds no key and publishes nothing.
+`starter` is the plumbing every native Nostr app needs, plus a deliberately plain example interface on top of it. The plumbing is small non-visual files: dialing relays and reading from them on background threads, a local LMDB store that verifies before it keeps, and NIP-23 parsing with replaceable events handled. The example interface is a list and a reading view for long-form articles (kind 30023). It holds no key and publishes nothing.
+
+The point is "the plumbing is solved; design your own interface". The repository offers no UI templates, no theme kit and no reusable view components, and a change must not add them. Native nostr apps should each be designed uniquely, so the example interface is marked in code and in the README as something to replace.
 
 The stack is Zig 0.16.0 (pinned in `.zigversion`), the [Native SDK](https://github.com/vercel-labs/native) for the window (pinned in `build.zig.zon` to a fork, with the same url and hash Plaza uses), and the [`nostr`](https://github.com/zig-nostr/nostr) library for relays, event verification and the store.
 
@@ -28,33 +30,41 @@ To run the window with its test hooks: `native build -Dautomation=true`, then dr
 
 ```
 src/
-  main.zig       # wiring: opens the store, builds the fetcher, starts the window
-  model.zig      # Model, Msg, update, boot: all app state and every change to it
-  app.native     # the view, as markup over the model
-  articles.zig   # what a NIP-23 event means: title, date, summary, rows, pages
-  store.zig      # the LMDB store and store.accept, the door every relay event uses
-  relays.zig     # one worker thread per relay, with time limits
-  tests.zig      # update and view tests, no window and no network
-  testkit.zig    # test fixture: a temp database and signing keys
-  testrelay.zig  # test fixture: a loopback relay
-build.zig        # app build plus the nostr dependency
-build.zig.zon    # dependencies, pinned by hash
-app.zon          # app identity, window, permissions
+  plumbing/            # the same for every nostr app; nothing in it draws
+    relays.zig         # one worker thread per relay, read-only, with time limits
+    store.zig          # the LMDB store and store.accept, the door every relay event uses
+    nip23.zig          # what a NIP-23 event means, and the one question the app asks
+    data.zig           # THE SEAM: the only plumbing file the interface imports
+    testkit.zig        # test fixture: a temp database and signing keys
+    testrelay.zig      # test fixture: a loopback relay
+  main.zig             # wiring: opens the store, builds Data, starts the window
+  model.zig            # } the example interface: state, messages, update, boot
+  display.zig          # } how that interface holds rows and pages
+  app.native           # } the view, as markup over the model
+  tests.zig            # } update and view tests, no window and no network
+build.zig              # app build plus the nostr dependency
+build.zig.zon          # dependencies, pinned by hash
+app.zon                # app identity, window, permissions
 ```
+
+The four files marked `}` are the example interface. They are meant to be replaced by whoever builds on this repository, and everything under `plumbing/` should keep working when they are.
 
 ## How data moves
 
-Worker threads (`relays.zig`) dial relays, send one subscription, and pass every event through `store.accept`, which checks the filter, the text encoding and the signature before the event is stored. They never touch the `Model`. They bump `Fetcher.version`, and a repeating timer in `model.zig` notices and re-reads the store into the list. Only `update` changes the `Model`, and only on the window's thread.
+Worker threads (`plumbing/relays.zig`) dial relays, send one subscription, and pass every event through `store.accept`, which checks the filter, the text encoding and the signature before the event is stored. They never touch the `Model`. They bump `Fetcher.version`, which the interface sees as `Data.changes()`, and a repeating timer in `model.zig` notices and re-reads the saved articles through `Data.articles()`. Only `update` changes the `Model`, and only on the window's thread.
 
 ## Conventions
 
 - Zig 0.16 idioms (`std.Io`, unmanaged `ArrayList`, `main(std.process.Init)`). `native skills get zig` lists the old-to-new changes by compile error.
+- The seam is `plumbing/data.zig`. The interface (`model.zig`, `display.zig`) imports no other file from `plumbing/`, and no file in `plumbing/` imports the toolkit. Two tests in `tests.zig` enforce both. When the interface needs something new from the plumbing, add a call to `data.zig`.
+- Plumbing files do one job each and stay non-visual: no widgets, no layout, no colours, no strings meant for a screen. What an interface does with an `Article` is the interface's business.
+- Do not factor the example interface into reusable pieces. No component library, no theme or style kit, no shared view helpers. If a screen needs something, it is written in that screen. Do not add screens to the example beyond a list and a reading view: a bigger example invites copying it.
 - Everything a view reads is a public field or function inside `Model` (or a method on an item type). A function next to the struct, not inside it, is invisible to the markup.
 - State the markup does not read directly goes in `Model.view_unbound`, so `native check` stays quiet.
 - Validate anything that came off the network at the boundary (`store.accept`), once, so code after it can assume well-formed input.
 - Every network wait has a time limit. A new fetch gets one.
 - Never hand-roll cryptography. Signing and verification come from the `nostr` library.
-- A change ships with a test that fails without it. The tests for parsing are pure functions over hand-built events; the tests for the store use a temp database; the tests for the view build the real markup and press real widgets.
+- A change ships with a test that fails without it. The tests for parsing are pure functions over hand-built events; the tests for the store use a temp database; the tests for the interface build the real markup and press real widgets.
 - Keep files small and single-purpose. A new subsystem gets its own file and its own tests.
 - Match the existing comment style: say why, not what.
 
@@ -64,4 +74,4 @@ Worker threads (`relays.zig`) dial relays, send one subscription, and pass every
 
 ## Security
 
-This app holds no secret key and must not grow one casually. If you add signing, keep the key in a separate process and talk to it over NIP-46. Text in articles is written by strangers: links are opened only when `model.isSafeExternalUrl` accepts them, remote images are not loaded, and invalid UTF-8 is refused before storage.
+This app holds no secret key and must not grow one casually. If you add signing, keep the key in a separate process and talk to it over NIP-46 (Notary, or any NIP-46 signer). Text in articles is written by strangers: links are opened only when `model.isSafeExternalUrl` accepts them, remote images are not loaded, and invalid UTF-8 is refused before storage.
