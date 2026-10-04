@@ -198,6 +198,35 @@ test "an article with no title tag is listed by its first line" {
     try testing.expectEqualStrings("The heading is the title", model.rows[0].title());
 }
 
+test "a long title is cut with an ellipsis in the list, and shown whole in the reader" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    // Sixty CJK characters: 180 bytes, more than a row keeps.
+    const title = "\u{9577}\u{3044}\u{984C}" ** 20;
+    _ = try fx.save(fx.alice, .{ .title = title });
+
+    const model = try newModel();
+    defer freeModel(model);
+    var effects = newEffects();
+    defer effects.deinit();
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
+
+    const listed = model.rows[0].title();
+    try testing.expect(std.mem.endsWith(u8, listed, "\u{2026}"));
+    try testing.expect(std.mem.startsWith(u8, title, listed[0 .. listed.len - "\u{2026}".len]));
+
+    model_mod.update(model, .{ .open = 0 }, &effects);
+    try testing.expectEqualStrings(title, model.readTitle());
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const tree = try buildTree(arena_state.allocator(), model);
+    _ = try expectByText(tree.root, .text, title);
+}
+
 test "the list never holds more than its capacity" {
     var fx: Fixture = undefined;
     try fx.init();

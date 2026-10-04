@@ -16,6 +16,7 @@ const nostr = @import("nostr");
 const data = @import("plumbing/data.zig");
 
 const whitespace = " \t\r\n";
+const ellipsis = "\u{2026}";
 
 /// The most rows the list holds.
 pub const list_cap = 50;
@@ -30,7 +31,6 @@ pub fn shortNpub(pubkey: [32]u8, out: *[short_npub_len]u8) []const u8 {
     const npub = nostr.nip19.encodeNpub(fba.allocator(), pubkey) catch return "npub";
     const head = 12;
     const tail = 6;
-    const ellipsis = "\u{2026}";
     @memcpy(out[0..head], npub[0..head]);
     @memcpy(out[head..][0..ellipsis.len], ellipsis);
     @memcpy(out[head + ellipsis.len ..][0..tail], npub[npub.len - tail ..]);
@@ -43,9 +43,10 @@ pub const short_npub_len = 12 + 3 + 6;
 
 /// A bounded copy of some text from an event. A row is copied out of the
 /// store so the list can be drawn without holding the store open, and the copy
-/// has to fit the row: it is cut at a character boundary, and anything that
-/// would break a single line (a newline, a tab, other control bytes) becomes a
-/// space. Titles are written by strangers.
+/// has to fit the row: it is cut at a character boundary and ends in an
+/// ellipsis when it was cut, and anything that would break a single line (a
+/// newline, a tab, other control bytes) becomes a space. Titles are written by
+/// strangers.
 pub fn Text(comptime capacity: usize) type {
     return struct {
         const Self = @This();
@@ -54,9 +55,18 @@ pub fn Text(comptime capacity: usize) type {
         len: usize = 0,
 
         pub fn set(self: *Self, text: []const u8) void {
-            const kept = utf8Prefix(text, capacity);
+            // Text that does not fit keeps room for the ellipsis, so a cut is
+            // never mistaken for the whole thing. Forty CJK characters fit in
+            // 120 bytes and are narrower than a row, so the row would not
+            // elide them itself.
+            const cut = text.len > capacity;
+            const kept = utf8Prefix(text, if (cut) capacity - ellipsis.len else capacity);
             for (kept, 0..) |byte, i| self.bytes[i] = if (byte < 0x20 or byte == 0x7f) ' ' else byte;
             self.len = kept.len;
+            if (cut) {
+                @memcpy(self.bytes[self.len..][0..ellipsis.len], ellipsis);
+                self.len += ellipsis.len;
+            }
         }
 
         pub fn get(self: *const Self) []const u8 {
@@ -216,11 +226,16 @@ test "a short npub keeps the start and the end" {
     try testing.expectEqualStrings(full[full.len - 6 ..], short[short.len - 6 ..]);
 }
 
-test "text is cut at a character boundary and kept on one line" {
-    var text: Text(8) = .{};
-    // Four 3-byte characters would be 12 bytes; only two whole ones fit in 8.
+test "text is cut at a character boundary, says it was cut, and is kept on one line" {
+    var text: Text(9) = .{};
+    // Four 3-byte characters are 12 bytes. With 3 kept for the ellipsis, two
+    // whole ones fit in the 6 that are left.
     text.set("\u{20AC}\u{20AC}\u{20AC}\u{20AC}");
-    try testing.expectEqualStrings("\u{20AC}\u{20AC}", text.get());
+    try testing.expectEqualStrings("\u{20AC}\u{20AC}\u{2026}", text.get());
+
+    // Text that fits exactly is whole, with no ellipsis.
+    text.set("\u{20AC}\u{20AC}\u{20AC}");
+    try testing.expectEqualStrings("\u{20AC}\u{20AC}\u{20AC}", text.get());
 
     text.set("a\nb\tc\x00d");
     try testing.expectEqualStrings("a b c d", text.get());

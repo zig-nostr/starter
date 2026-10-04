@@ -80,8 +80,11 @@ pub const Model = struct {
         return model.reading != null;
     }
 
+    /// The whole title, from the article itself. The row's copy is cut to
+    /// fit a line of the list, and the reader has room to wrap.
     pub fn readTitle(model: *const Model) []const u8 {
-        return model.reading_row.title();
+        const opened = model.reading orelse return "";
+        return if (opened.article.title.len > 0) opened.article.title else model.reading_row.title();
     }
 
     pub fn readAuthor(model: *const Model) []const u8 {
