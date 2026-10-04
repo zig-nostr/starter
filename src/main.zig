@@ -8,8 +8,8 @@ const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 
 const model_mod = @import("model.zig");
-const relays = @import("relays.zig");
-const store_mod = @import("store.zig");
+const relays = @import("plumbing/relays.zig");
+const store_mod = @import("plumbing/store.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -128,10 +128,10 @@ fn startFetcher(gpa: std.mem.Allocator, store: *store_mod.Store, environ: *const
 }
 
 test {
-    _ = @import("articles.zig");
-    _ = @import("relays.zig");
-    _ = @import("store.zig");
-    _ = @import("testkit.zig");
-    _ = @import("testrelay.zig");
+    _ = @import("plumbing/articles.zig");
+    _ = @import("plumbing/relays.zig");
+    _ = @import("plumbing/store.zig");
+    _ = @import("plumbing/testkit.zig");
+    _ = @import("plumbing/testrelay.zig");
     _ = @import("tests.zig");
 }

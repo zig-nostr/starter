@@ -13,9 +13,9 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 const nostr = @import("nostr");
-const articles = @import("articles.zig");
-const relays = @import("relays.zig");
-const store_mod = @import("store.zig");
+const articles = @import("plumbing/articles.zig");
+const relays = @import("plumbing/relays.zig");
+const store_mod = @import("plumbing/store.zig");
 
 pub const Effects = native_sdk.Effects(Msg);
 
