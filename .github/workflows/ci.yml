@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # The full check on macOS, the platform the app is run and packaged on.
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Zig version
+        id: zig-version
+        run: echo "version=$(cat .zigversion)" >> "$GITHUB_OUTPUT"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.zig-version.outputs.version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The CLI and the framework pinned in build.zig.zon move together: the
+      # automation harness refuses to read a snapshot when the two speak
+      # different protocol versions. Change both in the same commit.
+      - name: Install the Native SDK CLI
+        run: npm install -g @native-sdk/cli@0.10.1
+
+      # The typed half of `native check` reads zig-out/model-contract.zon,
+      # which is emitted rather than committed. Without it the check quietly
+      # falls back to structural checking and still exits 0.
+      - name: Emit the model contract
+        run: zig build model-contract
+
+      - name: Check markup and manifest
+        run: |
+          set -euo pipefail
+          out="$(native check 2>&1)"
+          printf '%s\n' "$out"
+          if printf '%s' "$out" | grep -qE 'model contract: (not yet built|.*is stale)'; then
+            echo "native check ran without a model contract, so the typed checks did not run" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: native test
+
+      - name: Build
+        run: native build
+
+      - name: Check formatting
+        run: zig fmt --check src build.zig build.zig.zon app.zon
+
+  # Linux builds the whole stack (the library with its bundled secp256k1 and
+  # LMDB, and the app) and runs the tests, so a portability break shows up on
+  # the pull request that causes it.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Zig version
+        id: zig-version
+        run: echo "version=$(cat .zigversion)" >> "$GITHUB_OUTPUT"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.zig-version.outputs.version }}
+
+      # gtk4 only: the app draws on a canvas and declares no web content.
+      - name: Install the Linux host dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
+
+      - name: Check formatting
+        run: zig fmt --check src build.zig build.zig.zon app.zon
