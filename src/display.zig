@@ -120,6 +120,13 @@ pub const Row = struct {
     pub fn hasSummary(row: *const Row) bool {
         return row.summary_text.len > 0;
     }
+    /// What the list keys a row by: the event id, so a row keeps its identity
+    /// when newer articles arrive and push it down. Keyed by position, a press
+    /// that started on one article could land on whichever moved into its
+    /// place.
+    pub fn eventKey(row: *const Row) []const u8 {
+        return &row.id;
+    }
 };
 
 // -- pages of a long article ------------------------------------------------

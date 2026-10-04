@@ -373,6 +373,41 @@ test "pressing an article opens it, and Articles goes back" {
     _ = try expectByLabel(tree.root, .list_item, "Worth reading");
 }
 
+test "a press opens the article it landed on, even when the list moved under it" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    _ = try fx.save(fx.alice, .{ .d = "a", .title = "Alpha", .created_at = 2_000 });
+    _ = try fx.save(fx.alice, .{ .d = "b", .title = "Beta", .created_at = 1_000 });
+
+    const model = try newModel();
+    defer freeModel(model);
+    var effects = newEffects();
+    defer effects.deinit();
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // The pointer goes down on Beta, the second row.
+    const before = try buildTree(arena, model);
+    const beta = try expectByLabel(before.root, .list_item, "Beta");
+
+    // A relay worker stores a newer article before the pointer comes up, a
+    // tick re-reads the list, and Beta is now the third row.
+    _ = try fx.save(fx.bob, .{ .d = "c", .title = "Gamma", .created_at = 3_000 });
+    rig.fetcher.bump();
+    model_mod.update(model, .{ .tick = .{ .key = 1 } }, &effects);
+    try testing.expectEqualStrings("Beta", model.rows[2].title());
+
+    const after = try buildTree(arena, model);
+    try press(model, &effects, after, beta);
+    try testing.expectEqualStrings("Beta", model.readTitle());
+}
+
 test "a long article is read a page at a time" {
     var fx: Fixture = undefined;
     try fx.init();

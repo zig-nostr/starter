@@ -42,7 +42,7 @@
     <separator />
     <scroll grow="1">
       <column padding="8" gap="2">
-        <for each="visible" key="index" as="a">
+        <for each="visible" key="eventKey" as="a">
           <list-item on-press="open:{a.index}" label="{a.title}">
             <column grow="1" gap="2" padding="4">
               <text>{a.title}</text>
