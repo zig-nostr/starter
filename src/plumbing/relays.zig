@@ -1,19 +1,22 @@
-//! Asking relays for articles, off the window's thread.
+//! Asking relays for events, off the window's thread. Read-only: nothing here
+//! publishes.
 //!
-//! One worker thread per relay. Each dials, sends one subscription, stores
-//! every verified event that comes back, and stops when the relay says it has
-//! sent everything it had stored (EOSE). The window never waits on any of it:
-//! it reads what the workers put in the store, and polls `Fetcher.version` to
-//! learn that something changed.
+//! One worker thread per relay. Each dials, sends one subscription for the
+//! filter it was given, stores every verified event that comes back, and stops
+//! when the relay says it has sent everything it had stored (EOSE). The window
+//! never waits on any of it: it reads what the workers put in the store, and
+//! polls `Fetcher.version` to learn that something changed.
 //!
 //! This is the smallest fetch that is still honest about the network. It has a
 //! time limit on the connect and on the whole read, because a relay that accepts
 //! a connection and then says nothing would otherwise hold its thread for the
 //! life of the process.
+//!
+//! The file knows nothing about articles. What to ask for is the filter passed
+//! to `Fetcher.init`, and what to keep is decided by `store.accept`.
 
 const std = @import("std");
 const nostr = @import("nostr");
-const articles = @import("articles.zig");
 const store_mod = @import("store.zig");
 
 pub const Store = store_mod.Store;
@@ -37,7 +40,7 @@ pub const default_dial_ms: i64 = 6_000;
 pub const default_read_ms: i64 = 20_000;
 
 /// The subscription id. Only events that arrive under it are looked at.
-const sub_id = "articles";
+const sub_id = "starter";
 
 /// Where one relay's fetch stands. `done` means the relay sent its EOSE, which
 /// is the only thing that counts as an answer: a relay we merely have in the
@@ -54,6 +57,9 @@ pub const Tally = struct {
 pub const Fetcher = struct {
     store: *store_mod.Store,
     urls: []const []const u8,
+    /// The question every relay is asked, and the test every event it sends
+    /// back has to pass.
+    filter: nostr.filter.Filter,
     states: [max_relays]std.atomic.Value(u8) = @splat(.init(@intFromEnum(State.idle))),
     /// Bumped whenever a worker stores something new or changes state. The
     /// window compares it with the value it last saw.
@@ -61,10 +67,11 @@ pub const Fetcher = struct {
     dial_ms: i64 = default_dial_ms,
     read_ms: i64 = default_read_ms,
 
-    /// `urls` must outlive the fetcher, and a fetcher must not move once
-    /// `start` has been called: the workers hold a pointer to it.
-    pub fn init(store: *store_mod.Store, urls: []const []const u8) Fetcher {
-        return .{ .store = store, .urls = urls[0..@min(urls.len, max_relays)] };
+    /// `urls` and the slices inside `filter` must outlive the fetcher, and a
+    /// fetcher must not move once `start` has been called: the workers hold a
+    /// pointer to it.
+    pub fn init(store: *store_mod.Store, urls: []const []const u8, filter: nostr.filter.Filter) Fetcher {
+        return .{ .store = store, .urls = urls[0..@min(urls.len, max_relays)], .filter = filter };
     }
 
     /// Starts a worker for every relay that is not already being asked. Called
@@ -140,7 +147,7 @@ fn fetchOne(fetcher: *Fetcher, i: usize) !void {
     defer relay.deinit();
     fetcher.set(i, .reading);
 
-    try relay.subscribe(sub_id, &.{articles.wanted});
+    try relay.subscribe(sub_id, &.{fetcher.filter});
 
     const give_up_at = std.Io.Timestamp.now(io, .awake).toMilliseconds() + fetcher.read_ms;
     while (true) {
@@ -161,7 +168,7 @@ fn fetchOne(fetcher: *Fetcher, i: usize) !void {
                 if (!std.mem.eql(u8, e.subscription_id, sub_id)) continue;
                 // `accept` verifies the signature, so a bad event is a value
                 // (`.invalid`), not an error: dropped and the loop goes on.
-                const result = store_mod.accept(fetcher.store, gpa, signer, e.event) catch |err| {
+                const result = store_mod.accept(fetcher.store, gpa, signer, fetcher.filter, e.event) catch |err| {
                     std.debug.print("starter: could not store an event: {s}\n", .{@errorName(err)});
                     continue;
                 };
@@ -295,7 +302,7 @@ test "the defaults are all valid relay URLs" {
 test "a fetcher counts relays by what they did, not by being listed" {
     var store: store_mod.Store = undefined;
     const urls = [_][]const u8{ "ws://a:1", "ws://b:1", "ws://c:1", "ws://d:1" };
-    var fetcher = Fetcher.init(&store, &urls);
+    var fetcher = Fetcher.init(&store, &urls, wanted);
 
     try testing.expectEqual(Tally{ .total = 4 }, fetcher.tally());
 
@@ -308,18 +315,19 @@ test "a fetcher counts relays by what they did, not by being listed" {
 test "every state change is visible in the version" {
     var store: store_mod.Store = undefined;
     const urls = [_][]const u8{"ws://a:1"};
-    var fetcher = Fetcher.init(&store, &urls);
+    var fetcher = Fetcher.init(&store, &urls, wanted);
     const before = fetcher.version.load(.acquire);
     fetcher.set(0, .done);
     try testing.expect(fetcher.version.load(.acquire) != before);
 }
 
 const testrelay = @import("testrelay.zig");
+const wanted = @import("nip23.zig").wanted;
 const Fixture = @import("testkit.zig").Fixture;
 
 /// Runs a relay worker to completion on this thread, against `url`.
 fn fetchFrom(fx: *Fixture, url: []const u8, dial_ms: i64, read_ms: i64) !Fetcher {
-    var fetcher = Fetcher.init(&fx.store, @as(*const [1][]const u8, &url));
+    var fetcher = Fetcher.init(&fx.store, @as(*const [1][]const u8, &url), wanted);
     fetcher.dial_ms = dial_ms;
     fetcher.read_ms = read_ms;
     run(&fetcher, 0);
@@ -373,7 +381,7 @@ test "a worker started by the fetcher finishes, and the version says so" {
     var url_buf: [40]u8 = undefined;
     const urls = [_][]const u8{try testrelay.url(&url_buf, relay.port())};
 
-    var fetcher = Fetcher.init(&fx.store, &urls);
+    var fetcher = Fetcher.init(&fx.store, &urls, wanted);
     const before = fetcher.version.load(.acquire);
     fetcher.start();
     // A thread does the work, so wait for it, with a limit.
@@ -390,7 +398,7 @@ test "a relay that is already being asked is not asked again" {
     try fx.init();
     defer fx.deinit();
     const urls = [_][]const u8{"ws://127.0.0.1:1"};
-    var fetcher = Fetcher.init(&fx.store, &urls);
+    var fetcher = Fetcher.init(&fx.store, &urls, wanted);
 
     fetcher.set(0, .reading);
     const before = fetcher.version.load(.acquire);

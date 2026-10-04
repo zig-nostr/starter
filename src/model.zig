@@ -1,4 +1,10 @@
-//! The app's state and the one function that changes it.
+//! YOUR APP'S INTERFACE: REPLACE IT.
+//!
+//! The state of this example's two screens (a list and a reading view) and the
+//! one function that changes it. It is here to show how an interface reads the
+//! plumbing, through `plumbing/data.zig` and nothing else. Design your own
+//! screens from scratch: change the model, the messages and `app.native`
+//! together, and keep the calls to `Data` as they are.
 //!
 //! The Native SDK runs an Elm-style loop. The window shows whatever the view
 //! (`app.native`) makes of the `Model`. A press or a timer becomes a `Msg`,
@@ -7,15 +13,13 @@
 //! `update` and looking at the result.
 //!
 //! The model never holds a relay or a socket. The worker threads in
-//! `relays.zig` write into the store, and `poll` reads the store back when a
-//! tick notices that they did.
+//! `plumbing/relays.zig` write into the store, and `poll` reads it back
+//! (through `Data`) when a tick notices that they did.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const nostr = @import("nostr");
-const articles = @import("plumbing/articles.zig");
-const relays = @import("plumbing/relays.zig");
-const store_mod = @import("plumbing/store.zig");
+const data_mod = @import("plumbing/data.zig");
+const display = @import("display.zig");
 
 pub const Effects = native_sdk.Effects(Msg);
 
@@ -42,35 +46,33 @@ pub const Msg = union(enum) {
 
 pub const Model = struct {
     // The list.
-    rows: [articles.list_cap]articles.Row = @splat(.{}),
+    rows: [display.list_cap]display.Row = @splat(.{}),
     row_count: usize = 0,
 
-    // The article being read, if any. The event is held whole (it owns an
-    // arena), and `reading_row` is the same article's heading.
-    reading: ?nostr.store.StoredEvent = null,
-    reading_row: articles.Row = .{},
-    pages: articles.Pages = .{},
+    // The article being read, if any. It is held whole (it owns its memory),
+    // and `reading_row` is the same article's heading.
+    reading: ?data_mod.Opened = null,
+    reading_row: display.Row = .{},
+    pages: display.Pages = .{},
     page: usize = 0,
 
-    // Set once in `main`, before the window opens. Both stay null in the tests
-    // that do not need a database or a network.
-    store: ?*store_mod.Store = null,
-    fetcher: ?*relays.Fetcher = null,
-    /// The fetcher's `version` when the list was last read from the store.
-    seen_version: u32 = 0,
+    // The seam to the plumbing. Set once in `main`, before the window opens,
+    // and null in the tests that need neither a database nor a network.
+    data: ?*data_mod.Data = null,
+    /// `Data.changes` when the list was last read.
+    seen_changes: u32 = 0,
 
     // Everything above is state, and none of it is bound directly by the
     // markup: the view reads the functions below. `native check` would
     // otherwise warn that this state is unused.
     pub const view_unbound = .{
-        "rows",         "row_count", "reading", "reading_row",
-        "pages",        "page",      "store",   "fetcher",
-        "seen_version",
+        "rows",  "row_count", "reading", "reading_row",
+        "pages", "page",      "data",    "seen_changes",
     };
 
     // -- what the view reads ------------------------------------------------
 
-    pub fn visible(model: *const Model) []const articles.Row {
+    pub fn visible(model: *const Model) []const display.Row {
         return model.rows[0..model.row_count];
     }
 
@@ -92,8 +94,8 @@ pub const Model = struct {
 
     /// The part of the article on screen: one page of its markdown.
     pub fn pageText(model: *const Model) []const u8 {
-        const event = model.reading orelse return "";
-        return model.pages.slice(event.event.content, model.page);
+        const opened = model.reading orelse return "";
+        return model.pages.slice(opened.article.content, model.page);
     }
 
     pub fn pageNumber(model: *const Model) usize {
@@ -122,8 +124,11 @@ pub const Model = struct {
     pub fn status(model: *const Model, arena: std.mem.Allocator) []const u8 {
         const saved = model.row_count;
         const noun = if (saved == 1) "article" else "articles";
-        const fetcher = model.fetcher orelse return std.fmt.allocPrint(arena, "{d} {s} saved", .{ saved, noun }) catch "";
-        const tally = fetcher.tally();
+        const only_saved = std.fmt.allocPrint(arena, "{d} {s} saved", .{ saved, noun }) catch "";
+        const data = model.data orelse return only_saved;
+        const tally = data.progress();
+        // No relays to ask, so there is nothing to report about them.
+        if (tally.total == 0) return only_saved;
         if (tally.working > 0) {
             return std.fmt.allocPrint(arena, "{d} {s} saved | asking relays, {d} of {d} answered", .{ saved, noun, tally.answered, tally.total }) catch "";
         }
@@ -134,56 +139,52 @@ pub const Model = struct {
     }
 
     pub fn isFetching(model: *const Model) bool {
-        const fetcher = model.fetcher orelse return false;
-        return fetcher.tally().working > 0;
+        const data = model.data orelse return false;
+        return data.progress().working > 0;
     }
 
     // -- changes the update function makes ----------------------------------
 
-    /// Fills the list from the store: the newest articles, shown by the date
-    /// they were first published.
+    /// Fills the list from the saved articles, newest published first (that
+    /// order is `Data.articles`' to give).
     pub fn reload(model: *Model) void {
-        const store = model.store orelse return;
-        var result = store_mod.newest(store, std.heap.page_allocator, articles.list_cap) catch |err| {
-            std.debug.print("starter: could not read the store: {s}\n", .{@errorName(err)});
+        const data = model.data orelse return;
+        var list = data.articles(std.heap.page_allocator, display.list_cap) catch |err| {
+            std.debug.print("starter: could not read the saved articles: {s}\n", .{@errorName(err)});
             return;
         };
-        defer result.deinit();
+        defer list.deinit();
 
-        var count: usize = 0;
-        for (result.events) |ev| {
-            if (!articles.worthListing(ev)) continue;
-            model.rows[count] = articles.Row.from(ev);
-            count += 1;
+        for (list.items, 0..) |article, i| {
+            model.rows[i] = display.Row.from(article);
+            model.rows[i].index = i;
         }
-        std.mem.sort(articles.Row, model.rows[0..count], {}, articles.newerFirst);
-        for (model.rows[0..count], 0..) |*row, i| row.index = i;
-        model.row_count = count;
+        model.row_count = list.items.len;
     }
 
     /// Re-reads the list if a relay worker has stored something, or changed
     /// state, since the last look.
     fn poll(model: *Model) void {
-        const fetcher = model.fetcher orelse return;
-        const version = fetcher.version.load(.acquire);
-        if (version == model.seen_version) return;
-        model.seen_version = version;
+        const data = model.data orelse return;
+        const changes = data.changes();
+        if (changes == model.seen_changes) return;
+        model.seen_changes = changes;
         model.reload();
     }
 
     fn openArticle(model: *Model, index: usize) void {
         if (index >= model.row_count) return;
-        const store = model.store orelse return;
+        const data = model.data orelse return;
         const row = model.rows[index];
-        const stored = store.getEvent(std.heap.page_allocator, row.id) catch |err| {
+        const opened = data.article(std.heap.page_allocator, row.id) catch |err| {
             std.debug.print("starter: could not read the article: {s}\n", .{@errorName(err)});
             return;
         } orelse return;
 
         model.closeArticle();
-        model.reading = stored;
+        model.reading = opened;
         model.reading_row = row;
-        model.pages = articles.Pages.split(stored.event.content);
+        model.pages = display.Pages.split(opened.article.content);
         model.page = 0;
     }
 
@@ -192,7 +193,7 @@ pub const Model = struct {
     }
 
     fn closeArticle(model: *Model) void {
-        if (model.reading) |*stored| stored.deinit();
+        if (model.reading) |*opened| opened.deinit();
         model.reading = null;
         model.pages = .{};
         model.page = 0;
@@ -205,7 +206,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             if (timer.outcome != .fired) return;
             model.poll();
         },
-        .refresh => if (model.fetcher) |fetcher| fetcher.start(),
+        .refresh => if (model.data) |data| data.refresh(),
         .open => |index| model.openArticle(index),
         .close => model.closeArticle(),
         .next_page => if (model.hasNext()) {
@@ -223,7 +224,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
 /// are asked and the timer starts watching for what they bring.
 pub fn boot(model: *Model, fx: *Effects) void {
     model.reload();
-    if (model.fetcher) |fetcher| fetcher.start();
+    if (model.data) |data| data.refresh();
     fx.startTimer(.{
         .key = tick_key,
         .interval_ms = tick_ms,

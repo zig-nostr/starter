@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const nostr = @import("nostr");
-const articles = @import("articles.zig");
+const nip23 = @import("nip23.zig");
 const store_mod = @import("store.zig");
 
 const testing = std.testing;
@@ -27,7 +27,7 @@ pub const Fixture = struct {
         var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
         const dir_len = try self.tmp.dir.realPath(testing.io, &dir_buf);
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const file = try std.fmt.bufPrintZ(&path_buf, "{s}/articles.mdb", .{dir_buf[0..dir_len]});
+        const file = try std.fmt.bufPrintZ(&path_buf, "{s}/events.mdb", .{dir_buf[0..dir_len]});
         self.store = try store_mod.openAt(file);
         errdefer self.store.deinit();
 
@@ -47,14 +47,14 @@ pub const Fixture = struct {
     pub fn path(self: *Fixture, buf: *[std.fs.max_path_bytes]u8) ![:0]const u8 {
         var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
         const dir_len = try self.tmp.dir.realPath(testing.io, &dir_buf);
-        return std.fmt.bufPrintZ(buf, "{s}/articles.mdb", .{dir_buf[0..dir_len]});
+        return std.fmt.bufPrintZ(buf, "{s}/events.mdb", .{dir_buf[0..dir_len]});
     }
 
     pub const Spec = struct {
         created_at: i64 = 1_700_000_000,
         d: []const u8 = "essay",
         /// The `t` tag. Articles are only kept when it is the topic asked for.
-        topic: []const u8 = articles.topic,
+        topic: []const u8 = nip23.topic,
         title: ?[]const u8 = null,
         summary: ?[]const u8 = null,
         published_at: ?[]const u8 = null,
@@ -71,12 +71,12 @@ pub const Fixture = struct {
         if (spec.title) |t| try tags.append(a, try a.dupe([]const u8, &.{ "title", t }));
         if (spec.summary) |t| try tags.append(a, try a.dupe([]const u8, &.{ "summary", t }));
         if (spec.published_at) |t| try tags.append(a, try a.dupe([]const u8, &.{ "published_at", t }));
-        return nostr.event.create(testing.allocator, self.signer, who, spec.created_at, articles.kind, tags.items, spec.content, null);
+        return nostr.event.create(testing.allocator, self.signer, who, spec.created_at, nip23.kind, tags.items, spec.content, null);
     }
 
     /// Makes an article and stores it the way a relay worker would.
     pub fn save(self: *Fixture, who: nostr.keys.KeyPair, spec: Spec) !nostr.store.IngestResult {
         const ev = try self.make(who, spec);
-        return store_mod.accept(&self.store, testing.allocator, self.signer, ev);
+        return store_mod.accept(&self.store, testing.allocator, self.signer, nip23.wanted, ev);
     }
 };

@@ -1,6 +1,9 @@
-//! Wiring: opens the store, starts the relay workers, and hands the window to
-//! the Native SDK. The app itself is in `model.zig` (state and `update`) and
-//! `app.native` (the view); this file only joins the pieces.
+//! Wiring: opens the store, builds the relay fetcher, joins them into the one
+//! `Data` the interface reads, and hands the window to the Native SDK.
+//!
+//! The plumbing is in `plumbing/`. The interface is `model.zig`, `display.zig`
+//! and `app.native`, and it is yours to replace. This file only joins the two
+//! halves, so it changes when the window or the relay list does.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -8,6 +11,8 @@ const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 
 const model_mod = @import("model.zig");
+const data_mod = @import("plumbing/data.zig");
+const nip23 = @import("plumbing/nip23.zig");
 const relays = @import("plumbing/relays.zig");
 const store_mod = @import("plumbing/store.zig");
 
@@ -57,14 +62,15 @@ const ReaderApp = native_sdk.UiApp(Model, Msg);
 pub fn main(init: std.process.Init) !void {
     const gpa = std.heap.page_allocator;
 
-    // The store and the fetcher live for the whole process and are never torn
-    // down: the OS reclaims them at exit. A store that will not open is not
-    // fatal. The app still starts, with an empty list and nothing to fetch.
+    // The store, the fetcher and `Data` live for the whole process and are
+    // never torn down: the OS reclaims them at exit. A store that will not open
+    // is not fatal. The app still starts, with an empty list and nothing to
+    // fetch.
     const store: ?*store_mod.Store = store_mod.open(init.io, init.environ_map) catch |err| blk: {
         std.debug.print("starter: no local store ({s}); articles will not be saved\n", .{@errorName(err)});
         break :blk null;
     };
-    const fetcher: ?*relays.Fetcher = if (store) |s| try startFetcher(gpa, s, init.environ_map) else null;
+    const data: ?*data_mod.Data = if (store) |s| try buildData(gpa, s, init.environ_map) else null;
 
     // `create` allocates the app on the heap: the model holds the whole list,
     // which is too big to be passed around by value.
@@ -83,8 +89,7 @@ pub fn main(init: std.process.Init) !void {
         },
     });
     defer app_state.destroy();
-    app_state.model.store = store;
-    app_state.model.fetcher = fetcher;
+    app_state.model.data = data;
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = app_name,
@@ -108,10 +113,11 @@ pub fn main(init: std.process.Init) !void {
     }, init);
 }
 
-/// Picks the relay list (`STARTER_RELAYS`, or the defaults) and builds the
-/// fetcher. Starting it is `boot`'s job, so the first frame is drawn from
-/// disk before any relay is asked.
-fn startFetcher(gpa: std.mem.Allocator, store: *store_mod.Store, environ: *const std.process.Environ.Map) !*relays.Fetcher {
+/// Picks the relay list (`STARTER_RELAYS`, or the defaults), builds the fetcher
+/// for the question in `nip23.wanted`, and wraps both in the `Data` the
+/// interface reads. Starting the fetcher is `boot`'s job, so the first frame is
+/// drawn from disk before any relay is asked.
+fn buildData(gpa: std.mem.Allocator, store: *store_mod.Store, environ: *const std.process.Environ.Map) !*data_mod.Data {
     var slots: [relays.max_relays][]const u8 = undefined;
     var urls: []const []const u8 = &relays.default_urls;
     if (environ.get(relays.env_name)) |text| {
@@ -123,12 +129,16 @@ fn startFetcher(gpa: std.mem.Allocator, store: *store_mod.Store, environ: *const
         }
     }
     const fetcher = try gpa.create(relays.Fetcher);
-    fetcher.* = relays.Fetcher.init(store, try gpa.dupe([]const u8, urls));
-    return fetcher;
+    fetcher.* = relays.Fetcher.init(store, try gpa.dupe([]const u8, urls), nip23.wanted);
+    const data = try gpa.create(data_mod.Data);
+    data.* = data_mod.Data.init(store, fetcher);
+    return data;
 }
 
 test {
-    _ = @import("plumbing/articles.zig");
+    _ = @import("display.zig");
+    _ = @import("plumbing/data.zig");
+    _ = @import("plumbing/nip23.zig");
     _ = @import("plumbing/relays.zig");
     _ = @import("plumbing/store.zig");
     _ = @import("plumbing/testkit.zig");

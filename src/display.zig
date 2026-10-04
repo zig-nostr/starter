@@ -1,114 +1,24 @@
-//! What a NIP-23 long-form article is, as far as this app cares.
+//! YOUR APP'S INTERFACE: REPLACE IT.
 //!
-//! Nothing here touches a relay, the store or the window. Every function reads
-//! an event's own fields and answers a question about it, so the tests build
-//! events by hand and check the answers.
+//! How this example's interface holds what it shows. A row of the list is
+//! copied out of an article into fixed-size text, so the list can be drawn
+//! without keeping the store open, and a long article is cut into pages
+//! because the toolkit builds markdown into widgets and one view holds only so
+//! many. Both are choices of this particular interface. A different interface
+//! (a grid of cards, a single column that never leaves the article, a
+//! timeline) holds different things, and can drop this file.
 //!
-//! The reference for what to read out of an event is how Jumble shows
-//! long-form: the filter (constants.ts, the "articles" feed tab asks for
-//! `kinds: [30023]`), the metadata tags (lib/event-metadata.ts,
-//! `getLongFormArticleMetadataFromEvent`), and which timestamp a reader sees
-//! (lib/event-feed.ts, `getEventFeedTimestamp`).
+//! It reads articles through `plumbing/data.zig` and nothing else of the
+//! plumbing.
 
 const std = @import("std");
 const nostr = @import("nostr");
-
-const Event = nostr.event.Event;
-
-/// NIP-23: long-form content. An addressable event, so a relay (and the local
-/// store) keeps only the newest version of each pubkey + `d` tag.
-pub const kind: u16 = 30023;
-
-/// How many articles one relay is asked for, and the most the list holds.
-pub const list_cap = 50;
-
-/// The `t` tag an article must carry to be asked for.
-///
-/// Public relays hold a great deal of spam under kind 30023: SEO pages,
-/// placeholders, adult listings. Jumble reads long-form from the accounts you
-/// follow, and this app follows nobody, so it narrows by topic instead. To see
-/// every article a relay will give you, delete the `.tags` line from `wanted`.
-pub const topic = "nostr";
-
-/// The one question this app puts to a relay. The same filter is applied to
-/// every event that comes back (`Filter.matches`), because a relay is free to
-/// ignore the filter it was sent.
-pub const wanted: nostr.filter.Filter = .{
-    .kinds = &[_]u16{kind},
-    .tags = &[_]nostr.filter.TagFilter{.{ .letter = 't', .values = &[_][]const u8{topic} }},
-    .limit = list_cap,
-};
-
-// -- reading an event -------------------------------------------------------
-
-/// The value of the first tag called `name`, or null.
-pub fn tagValue(ev: Event, name: []const u8) ?[]const u8 {
-    for (ev.tags) |tag| {
-        if (tag.len >= 2 and std.mem.eql(u8, tag[0], name)) return tag[1];
-    }
-    return null;
-}
-
-/// The article's title: the `title` tag, or failing that the first line of the
-/// content with its markdown heading marks taken off. Empty when there is
-/// neither, and the caller decides what to call such an article.
-pub fn titleOf(ev: Event) []const u8 {
-    if (tagValue(ev, "title")) |t| {
-        const trimmed = std.mem.trim(u8, t, whitespace);
-        if (trimmed.len > 0) return trimmed;
-    }
-    return firstLine(ev.content);
-}
-
-/// The `summary` tag, trimmed. Empty when absent.
-pub fn summaryOf(ev: Event) []const u8 {
-    return std.mem.trim(u8, tagValue(ev, "summary") orelse "", whitespace);
-}
-
-/// The date a reader should see: the `published_at` tag when it is a plain
-/// number that is not later than the event itself, otherwise `created_at`.
-///
-/// `created_at` moves every time the author edits, so using it alone would
-/// date an old article by its last typo fix. A `published_at` after
-/// `created_at` is nonsense (clients also write milliseconds there), and
-/// Jumble falls back the same way.
-pub fn publishedAt(ev: Event) i64 {
-    const raw = tagValue(ev, "published_at") orelse return ev.created_at;
-    const stamp = std.fmt.parseInt(i64, raw, 10) catch return ev.created_at;
-    if (stamp <= 0 or stamp > ev.created_at) return ev.created_at;
-    return stamp;
-}
-
-/// Whether every string in the event is valid UTF-8, which JSON promises and a
-/// relay does not always deliver. Checked once, when an event arrives, so
-/// nothing after that has to wonder what a stray byte will do to a text layout.
-pub fn wellFormed(ev: Event) bool {
-    if (!std.unicode.utf8ValidateSlice(ev.content)) return false;
-    for (ev.tags) |tag| {
-        for (tag) |field| {
-            if (!std.unicode.utf8ValidateSlice(field)) return false;
-        }
-    }
-    return true;
-}
-
-/// Whether an article is worth a row. Relays hold plenty of empty events with
-/// a `d` tag and nothing else.
-pub fn worthListing(ev: Event) bool {
-    return std.mem.trim(u8, ev.content, whitespace).len > 0;
-}
+const data = @import("plumbing/data.zig");
 
 const whitespace = " \t\r\n";
 
-/// The first non-empty line, without leading `#` marks.
-fn firstLine(content: []const u8) []const u8 {
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        const text = std.mem.trim(u8, std.mem.trimStart(u8, std.mem.trim(u8, line, whitespace), "#"), whitespace);
-        if (text.len > 0) return text;
-    }
-    return "";
-}
+/// The most rows the list holds.
+pub const list_cap = 50;
 
 // -- a short npub -----------------------------------------------------------
 
@@ -167,7 +77,7 @@ pub fn utf8Prefix(text: []const u8, max: usize) []const u8 {
 // -- one row of the list ----------------------------------------------------
 
 /// What the list shows about one article. Everything is copied out of the
-/// event, so a `Row` stays valid after the query that produced it is freed.
+/// article, so a `Row` stays valid after the query that produced it is freed.
 pub const Row = struct {
     /// Position in the list, which is what a press sends back.
     index: usize = 0,
@@ -178,13 +88,12 @@ pub const Row = struct {
     summary_text: Text(200) = .{},
     author_text: Text(short_npub_len) = .{},
 
-    pub fn from(ev: Event) Row {
-        var row: Row = .{ .id = ev.id, .published = publishedAt(ev) };
-        const heading = titleOf(ev);
-        row.title_text.set(if (heading.len > 0) heading else "Untitled");
-        row.summary_text.set(summaryOf(ev));
+    pub fn from(article: data.Article) Row {
+        var row: Row = .{ .id = article.id, .published = article.published };
+        row.title_text.set(if (article.title.len > 0) article.title else "Untitled");
+        row.summary_text.set(article.summary);
         var npub: [short_npub_len]u8 = undefined;
-        row.author_text.set(shortNpub(ev.pubkey, &npub));
+        row.author_text.set(shortNpub(article.author, &npub));
         return row;
     }
 
@@ -202,12 +111,6 @@ pub const Row = struct {
         return row.summary_text.len > 0;
     }
 };
-
-/// Newest first, which is the order the list is shown in.
-pub fn newerFirst(_: void, a: Row, b: Row) bool {
-    if (a.published != b.published) return a.published > b.published;
-    return std.mem.order(u8, &a.id, &b.id) == .lt;
-}
 
 // -- pages of a long article ------------------------------------------------
 
@@ -289,78 +192,15 @@ fn isFence(line: []const u8) bool {
 
 const testing = std.testing;
 
-/// An unsigned event with just the fields the functions here read.
-fn testEvent(tags: []const nostr.event.Tag, content: []const u8) Event {
+fn testArticle(title: []const u8, summary: []const u8, published: i64) data.Article {
     return .{
         .id = @splat(0x11),
-        .pubkey = @splat(0x22),
-        .created_at = 1_700_000_000,
-        .kind = kind,
-        .tags = tags,
-        .content = content,
-        .sig = @splat(0),
+        .author = @splat(0x22),
+        .title = title,
+        .summary = summary,
+        .published = published,
+        .content = "body",
     };
-}
-
-test "the title is the title tag" {
-    const tags = [_]nostr.event.Tag{
-        &.{ "d", "a-slug" },
-        &.{ "title", "  A Plain Title " },
-    };
-    try testing.expectEqualStrings("A Plain Title", titleOf(testEvent(&tags, "# Not This\n\nbody")));
-}
-
-test "without a title tag the title is the first line, heading marks off" {
-    try testing.expectEqualStrings("Heading Line", titleOf(testEvent(&.{}, "\n\n## Heading Line\n\nbody")));
-    try testing.expectEqualStrings("No marks", titleOf(testEvent(&.{}, "No marks\nsecond line")));
-}
-
-test "an empty title tag falls through to the first line" {
-    const tags = [_]nostr.event.Tag{&.{ "title", "   " }};
-    try testing.expectEqualStrings("From the body", titleOf(testEvent(&tags, "From the body")));
-}
-
-test "no title and no content gives an empty title" {
-    try testing.expectEqualStrings("", titleOf(testEvent(&.{}, " \n \n")));
-}
-
-test "published_at is used when it is a plain number not after created_at" {
-    const early = [_]nostr.event.Tag{&.{ "published_at", "1600000000" }};
-    try testing.expectEqual(@as(i64, 1_600_000_000), publishedAt(testEvent(&early, "x")));
-
-    // After the event itself, and milliseconds written by mistake: ignored.
-    const future = [_]nostr.event.Tag{&.{ "published_at", "1800000000" }};
-    try testing.expectEqual(@as(i64, 1_700_000_000), publishedAt(testEvent(&future, "x")));
-    const millis = [_]nostr.event.Tag{&.{ "published_at", "1600000000000" }};
-    try testing.expectEqual(@as(i64, 1_700_000_000), publishedAt(testEvent(&millis, "x")));
-
-    // Not a number, negative, or missing.
-    const junk = [_]nostr.event.Tag{&.{ "published_at", "yesterday" }};
-    try testing.expectEqual(@as(i64, 1_700_000_000), publishedAt(testEvent(&junk, "x")));
-    const negative = [_]nostr.event.Tag{&.{ "published_at", "-5" }};
-    try testing.expectEqual(@as(i64, 1_700_000_000), publishedAt(testEvent(&negative, "x")));
-    try testing.expectEqual(@as(i64, 1_700_000_000), publishedAt(testEvent(&.{}, "x")));
-}
-
-test "a tag with no value is skipped, not read past its end" {
-    const tags = [_]nostr.event.Tag{ &.{"title"}, &.{} };
-    try testing.expectEqualStrings("Body title", titleOf(testEvent(&tags, "Body title")));
-}
-
-test "text that is not UTF-8 is not well formed" {
-    try testing.expect(wellFormed(testEvent(&.{}, "plain \u{20AC} text")));
-    try testing.expect(!wellFormed(testEvent(&.{}, "broken \xff\xfe bytes")));
-    // A truncated multi-byte sequence at the very end.
-    try testing.expect(!wellFormed(testEvent(&.{}, "cut short \xe2\x82")));
-
-    const bad_tag = [_]nostr.event.Tag{&.{ "title", "bad \xc0\xaf title" }};
-    try testing.expect(!wellFormed(testEvent(&bad_tag, "fine")));
-}
-
-test "empty articles are not worth a row" {
-    try testing.expect(!worthListing(testEvent(&.{}, "")));
-    try testing.expect(!worthListing(testEvent(&.{}, " \n\t ")));
-    try testing.expect(worthListing(testEvent(&.{}, "words")));
 }
 
 test "a short npub keeps the start and the end" {
@@ -386,13 +226,8 @@ test "text is cut at a character boundary and kept on one line" {
     try testing.expectEqualStrings("a b c d", text.get());
 }
 
-test "a row is copied out of the event" {
-    const tags = [_]nostr.event.Tag{
-        &.{ "title", "Hello" },
-        &.{ "summary", "A short summary." },
-        &.{ "published_at", "1650000000" },
-    };
-    const row = Row.from(testEvent(&tags, "body"));
+test "a row is copied out of the article" {
+    const row = Row.from(testArticle("Hello", "A short summary.", 1_650_000_000));
     try testing.expectEqualStrings("Hello", row.title());
     try testing.expectEqualStrings("A short summary.", row.summary());
     try testing.expect(row.hasSummary());
@@ -401,17 +236,9 @@ test "a row is copied out of the event" {
 }
 
 test "a row with nothing to call it is Untitled" {
-    const row = Row.from(testEvent(&.{}, "\n"));
+    const row = Row.from(testArticle("", "", 1_700_000_000));
     try testing.expectEqualStrings("Untitled", row.title());
     try testing.expect(!row.hasSummary());
-}
-
-test "rows sort newest first" {
-    var rows = [_]Row{ .{ .published = 10 }, .{ .published = 30 }, .{ .published = 20 } };
-    std.mem.sort(Row, &rows, {}, newerFirst);
-    try testing.expectEqual(@as(i64, 30), rows[0].published);
-    try testing.expectEqual(@as(i64, 20), rows[1].published);
-    try testing.expectEqual(@as(i64, 10), rows[2].published);
 }
 
 test "a short article is one page" {
@@ -478,19 +305,4 @@ test "one enormous paragraph is still cut, on a character boundary" {
         try testing.expect(page.len <= page_bytes);
         try testing.expect(std.unicode.utf8ValidateSlice(page));
     }
-}
-
-test "the wanted filter matches an article on the topic, and nothing else" {
-    const on_topic = [_]nostr.event.Tag{ &.{ "d", "slug" }, &.{ "t", topic } };
-    try testing.expect(wanted.matches(testEvent(&on_topic, "x")));
-
-    // Right kind, but about something else, or about nothing.
-    const off_topic = [_]nostr.event.Tag{&.{ "t", "recipes" }};
-    try testing.expect(!wanted.matches(testEvent(&off_topic, "x")));
-    try testing.expect(!wanted.matches(testEvent(&.{}, "x")));
-
-    // Right topic, wrong kind.
-    var note = testEvent(&on_topic, "x");
-    note.kind = 1;
-    try testing.expect(!wanted.matches(note));
 }

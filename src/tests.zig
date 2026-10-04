@@ -1,13 +1,18 @@
-//! The app tested the way it runs: real messages through `update`, the real
-//! markup built into a widget tree, and a real database in a temp directory.
-//! No window and no network.
+//! YOUR APP'S INTERFACE: REPLACE IT, and these tests with it.
+//!
+//! The example interface tested the way it runs: real messages through
+//! `update`, the real markup built into a widget tree, and a real database in
+//! a temp directory. No window and no network. The plumbing has its own tests
+//! beside it in `plumbing/`.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 const nostr = @import("nostr");
 const main = @import("main.zig");
 const model_mod = @import("model.zig");
-const articles = @import("plumbing/articles.zig");
+const display = @import("display.zig");
+const data_mod = @import("plumbing/data.zig");
+const nip23 = @import("plumbing/nip23.zig");
 const relays = @import("plumbing/relays.zig");
 const Fixture = @import("plumbing/testkit.zig").Fixture;
 
@@ -117,8 +122,20 @@ fn press(model: *Model, fx: *Effects, tree: AppUi.Tree, target: canvas.Widget) !
     model_mod.update(model, msg, fx);
 }
 
-fn loadModel(fx: *Fixture, model: *Model) void {
-    model.store = &fx.store;
+/// What `main` builds for the model: `Data` over a fixture's store, with a
+/// fetcher that has no relays to ask.
+const Rig = struct {
+    fetcher: relays.Fetcher,
+    data: data_mod.Data,
+
+    fn init(rig: *Rig, fx: *Fixture) void {
+        rig.fetcher = relays.Fetcher.init(&fx.store, &.{}, nip23.wanted);
+        rig.data = data_mod.Data.init(&fx.store, &rig.fetcher);
+    }
+};
+
+fn loadModel(rig: *Rig, model: *Model) void {
+    model.data = &rig.data;
     model.reload();
 }
 
@@ -148,7 +165,9 @@ test "the list shows the saved articles, by the date they were published" {
 
     const model = try newModel();
     defer freeModel(model);
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     try testing.expectEqual(@as(usize, 2), model.row_count);
     try testing.expectEqualStrings("Fresh essay", model.rows[0].title());
@@ -164,38 +183,6 @@ test "the list shows the saved articles, by the date they were published" {
     _ = try expectByText(tree.root, .status_bar, "2 articles saved");
 }
 
-test "empty articles are left out of the list" {
-    var fx: Fixture = undefined;
-    try fx.init();
-    defer fx.deinit();
-    _ = try fx.save(fx.alice, .{ .d = "blank", .title = "Nothing in it", .content = "  " });
-    _ = try fx.save(fx.alice, .{ .d = "real", .title = "Something in it" });
-
-    const model = try newModel();
-    defer freeModel(model);
-    loadModel(&fx, model);
-
-    try testing.expectEqual(@as(usize, 1), model.row_count);
-    try testing.expectEqualStrings("Something in it", model.rows[0].title());
-}
-
-test "an edited article is listed once, as its newest version" {
-    var fx: Fixture = undefined;
-    try fx.init();
-    defer fx.deinit();
-    _ = try fx.save(fx.alice, .{ .title = "Draft title", .created_at = 1_000 });
-    _ = try fx.save(fx.alice, .{ .title = "Final title", .created_at = 2_000 });
-    // And a relay that is behind sends the draft again.
-    _ = try fx.save(fx.alice, .{ .title = "Draft title", .created_at = 1_000 });
-
-    const model = try newModel();
-    defer freeModel(model);
-    loadModel(&fx, model);
-
-    try testing.expectEqual(@as(usize, 1), model.row_count);
-    try testing.expectEqualStrings("Final title", model.rows[0].title());
-}
-
 test "an article with no title tag is listed by its first line" {
     var fx: Fixture = undefined;
     try fx.init();
@@ -204,7 +191,9 @@ test "an article with no title tag is listed by its first line" {
 
     const model = try newModel();
     defer freeModel(model);
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     try testing.expectEqualStrings("The heading is the title", model.rows[0].title());
 }
@@ -214,7 +203,7 @@ test "the list never holds more than its capacity" {
     try fx.init();
     defer fx.deinit();
     var buf: [16]u8 = undefined;
-    for (0..articles.list_cap + 10) |i| {
+    for (0..display.list_cap + 10) |i| {
         const d = try std.fmt.bufPrint(&buf, "essay-{d}", .{i});
         // The store keeps the slug until the event is gone, so make it owned.
         _ = try fx.save(fx.alice, .{ .d = try fx.arena.allocator().dupe(u8, d), .created_at = 1_000 + @as(i64, @intCast(i)) });
@@ -222,9 +211,11 @@ test "the list never holds more than its capacity" {
 
     const model = try newModel();
     defer freeModel(model);
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
-    try testing.expectEqual(@as(usize, articles.list_cap), model.row_count);
+    try testing.expectEqual(@as(usize, display.list_cap), model.row_count);
 }
 
 test "an empty list says what it is waiting for" {
@@ -239,9 +230,10 @@ test "an empty list says what it is waiting for" {
     // With a relay mid-flight it says so instead, and Refresh is disabled.
     var store: relays.Store = undefined;
     const urls = [_][]const u8{"ws://a:1"};
-    var fetcher = relays.Fetcher.init(&store, &urls);
+    var fetcher = relays.Fetcher.init(&store, &urls, nip23.wanted);
+    var data = data_mod.Data.init(&store, &fetcher);
     fetcher.set(0, .reading);
-    model.fetcher = &fetcher;
+    model.data = &data;
 
     tree = try buildTree(arena_state.allocator(), model);
     _ = try expectByText(tree.root, .text, "Asking relays for articles...");
@@ -261,9 +253,10 @@ test "Refresh asks again, and a tick shows what arrived" {
 
     // No sockets: a fetcher with no relays has nothing to start, but its
     // version still moves when a worker would have stored something.
-    var fetcher = relays.Fetcher.init(&fx.store, &.{});
-    model.store = &fx.store;
-    model.fetcher = &fetcher;
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    const fetcher = &rig.fetcher;
+    model.data = &rig.data;
 
     model_mod.update(model, .refresh, &effects);
     try testing.expectEqual(@as(usize, 0), model.row_count);
@@ -300,8 +293,9 @@ test "the status line counts relays that answered, not relays that are listed" {
 
     var store: relays.Store = undefined;
     const urls = [_][]const u8{ "ws://a:1", "ws://b:1", "ws://c:1" };
-    var fetcher = relays.Fetcher.init(&store, &urls);
-    model.fetcher = &fetcher;
+    var fetcher = relays.Fetcher.init(&store, &urls, nip23.wanted);
+    var data = data_mod.Data.init(&store, &fetcher);
+    model.data = &data;
 
     try testing.expectEqualStrings("0 articles saved | 0 of 3 relays answered", model.status(arena));
 
@@ -326,7 +320,9 @@ test "pressing an article opens it, and Articles goes back" {
     defer freeModel(model);
     var effects = newEffects();
     defer effects.deinit();
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -363,7 +359,9 @@ test "a long article is read a page at a time" {
     defer freeModel(model);
     var effects = newEffects();
     defer effects.deinit();
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     model_mod.update(model, .{ .open = 0 }, &effects);
     const pages = model.pageCount();
@@ -401,7 +399,9 @@ test "opening a row that is not there does nothing" {
     defer freeModel(model);
     var effects = newEffects();
     defer effects.deinit();
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     model_mod.update(model, .{ .open = 7 }, &effects);
     try testing.expect(!model.isReading());
@@ -417,7 +417,9 @@ test "opening a second article replaces the first" {
     defer freeModel(model);
     var effects = newEffects();
     defer effects.deinit();
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     model_mod.update(model, .{ .open = 0 }, &effects);
     try testing.expectEqualStrings("alpha text", model.pageText());
@@ -463,7 +465,9 @@ test "both screens lay out and pass the accessibility audit at every window size
     defer freeModel(model);
     var effects = newEffects();
     defer effects.deinit();
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     const options: canvas.LayoutAuditSweepOptions = .{
         .min_size = native_sdk.geometry.SizeF.init(640, 480),
@@ -494,7 +498,7 @@ test "a full list and a full page stay inside the widget budget" {
 
     // A full list, every row with a summary.
     var buf: [16]u8 = undefined;
-    for (0..articles.list_cap) |i| {
+    for (0..display.list_cap) |i| {
         const d = try arena.dupe(u8, try std.fmt.bufPrint(&buf, "essay-{d}", .{i}));
         _ = try fx.save(fx.alice, .{ .d = d, .title = "Title", .summary = "A summary of the essay.", .created_at = 1_000 + @as(i64, @intCast(i)) });
     }
@@ -507,7 +511,9 @@ test "a full list and a full page stay inside the widget budget" {
     defer freeModel(model);
     var effects = newEffects();
     defer effects.deinit();
-    loadModel(&fx, model);
+    var rig: Rig = undefined;
+    rig.init(&fx);
+    loadModel(&rig, model);
 
     const nodes = try testing.allocator.alloc(canvas.WidgetLayoutNode, 4096);
     defer testing.allocator.free(nodes);
