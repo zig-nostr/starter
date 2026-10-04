@@ -1,0 +1,4 @@
+<!-- The whole view, as markup over the model in main.zig. -->
+<column background="background" padding="24">
+  <text size="heading">Starter</text>
+</column>

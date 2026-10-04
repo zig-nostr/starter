@@ -1,0 +1,17 @@
+.{
+    .name = .starter,
+    .fingerprint = 0x4042238bbb68d275,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .native_sdk = .{
+            .url = "git+https://github.com/zig-nostr/native.git#0eee6e3b09bf6ee054e7c62956097ea033bd062e",
+            .hash = "native_sdk-0.1.0-hzDzQj5QsgJf3gwFivco6sig1wjGaQcE_2heLFq5zNAU",
+        },
+        .nostr = .{
+            .url = "https://github.com/zig-nostr/nostr/archive/refs/tags/v0.14.7.tar.gz",
+            .hash = "nostr-0.14.7-CMyPzf41CQDLOqp_yXGvqnbCen3jPgf63PpqDXZVxxEC",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "assets", "app.zon" },
+}
