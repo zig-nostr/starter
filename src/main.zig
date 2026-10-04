@@ -1,34 +1,28 @@
-//! Wiring: describes the window and hands the app to the Native SDK.
+//! Wiring: opens the store, starts the relay workers, and hands the window to
+//! the Native SDK. The app itself is in `model.zig` (state and `update`) and
+//! `app.native` (the view); this file only joins the pieces.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 
+const model_mod = @import("model.zig");
+const relays = @import("relays.zig");
+const store_mod = @import("store.zig");
+
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 
-pub const Effects = native_sdk.Effects(Msg);
-
-/// Everything that can happen. Nothing does yet.
-pub const Msg = union(enum) {
-    idle,
-
-    pub const view_unbound = .{"idle"};
-};
-
-/// Everything the window shows. Nothing yet.
-pub const Model = struct {};
-
-pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
-    _ = model;
-    _ = fx;
-    switch (msg) {
-        .idle => {},
-    }
-}
+// The model contract tool (`native check`) and the tests look for these names
+// on the root file, so they are re-exported from where they are written.
+pub const Model = model_mod.Model;
+pub const Msg = model_mod.Msg;
+pub const Effects = model_mod.Effects;
+pub const update = model_mod.update;
+pub const boot = model_mod.boot;
 
 pub const AppUi = canvas.Ui(Msg);
 pub const app_markup = @embedFile("app.native");
@@ -61,10 +55,24 @@ const app_permissions = [_][]const u8{ native_sdk.security.permission_command, n
 const ReaderApp = native_sdk.UiApp(Model, Msg);
 
 pub fn main(init: std.process.Init) !void {
-    const app_state = try ReaderApp.create(std.heap.page_allocator, .{
+    const gpa = std.heap.page_allocator;
+
+    // The store and the fetcher live for the whole process and are never torn
+    // down: the OS reclaims them at exit. A store that will not open is not
+    // fatal. The app still starts, with an empty list and nothing to fetch.
+    const store: ?*store_mod.Store = store_mod.open(init.io, init.environ_map) catch |err| blk: {
+        std.debug.print("starter: no local store ({s}); articles will not be saved\n", .{@errorName(err)});
+        break :blk null;
+    };
+    const fetcher: ?*relays.Fetcher = if (store) |s| try startFetcher(gpa, s, init.environ_map) else null;
+
+    // `create` allocates the app on the heap: the model holds the whole list,
+    // which is too big to be passed around by value.
+    const app_state = try ReaderApp.create(gpa, .{
         .name = app_name,
         .scene = shell_scene,
         .canvas_label = canvas_label,
+        .init_fx = boot,
         .update_fx = update,
         .markup = .{
             .source = app_markup,
@@ -75,6 +83,8 @@ pub fn main(init: std.process.Init) !void {
         },
     });
     defer app_state.destroy();
+    app_state.model.store = store;
+    app_state.model.fetcher = fetcher;
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = app_name,
@@ -86,9 +96,35 @@ pub fn main(init: std.process.Init) !void {
         .js_window_api = false,
         .security = .{
             .permissions = &app_permissions,
-            .navigation = .{ .allowed_origins = &.{ "zero://inline", "zero://app" } },
+            .navigation = .{
+                .allowed_origins = &.{ "zero://inline", "zero://app" },
+                // Links inside an article open in the system browser. The
+                // toolkit's pattern language cannot say "any https URL", so
+                // this lets through whatever `model.isSafeExternalUrl`
+                // already passed, and that function is the real gate.
+                .external_links = .{ .action = .open_system_browser, .allowed_urls = &.{"*"} },
+            },
         },
     }, init);
+}
+
+/// Picks the relay list (`STARTER_RELAYS`, or the defaults) and builds the
+/// fetcher. Starting it is `boot`'s job, so the first frame is drawn from
+/// disk before any relay is asked.
+fn startFetcher(gpa: std.mem.Allocator, store: *store_mod.Store, environ: *const std.process.Environ.Map) !*relays.Fetcher {
+    var slots: [relays.max_relays][]const u8 = undefined;
+    var urls: []const []const u8 = &relays.default_urls;
+    if (environ.get(relays.env_name)) |text| {
+        const listed = relays.parseList(text, &slots);
+        if (listed.len > 0) {
+            urls = listed;
+        } else {
+            std.debug.print("starter: {s} has no usable relay URL; using the defaults\n", .{relays.env_name});
+        }
+    }
+    const fetcher = try gpa.create(relays.Fetcher);
+    fetcher.* = relays.Fetcher.init(store, try gpa.dupe([]const u8, urls));
+    return fetcher;
 }
 
 test {

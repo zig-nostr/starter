@@ -1,4 +1,65 @@
-<!-- The whole view, as markup over the model in main.zig. -->
-<column background="background" padding="24">
-  <text size="heading">Starter</text>
+<!-- The whole view, as markup over the model in model.zig.
+
+     It never changes anything itself. `{name}` reads a field or a function of
+     the model, and `on-press="open:{a.index}"` sends a message that `update`
+     handles. Edit this file while `native dev` runs and the window follows.
+     Check it without building: native check -->
+<column background="background">
+  <if test="{isReading}">
+    <!-- The article being read -->
+    <row padding="10" gap="8" cross="center">
+      <button size="sm" variant="ghost" icon="chevron-left" on-press="close">Articles</button>
+      <spacer grow="1" />
+      <if test="{hasPages}">
+        <text foreground="text_muted">Page {pageNumber} of {pageCount}</text>
+        <button size="sm" variant="outline" icon="chevron-left" label="Previous page" on-press="prev_page" disabled="{not hasPrev}" />
+        <button size="sm" variant="outline" icon="chevron-right" label="Next page" on-press="next_page" disabled="{not hasNext}" />
+      </if>
+    </row>
+    <separator />
+    <!-- A new key per page, so turning the page starts at the top -->
+    <scroll grow="1" key="{pageNumber}">
+      <row main="center">
+        <column grow="1" max-width="680" padding="24" gap="12">
+          <text size="heading" wrap="true">{readTitle}</text>
+          <text foreground="text_muted">{readAuthor} | {date(readPublished)}</text>
+          <markdown source="{pageText}" on-link="open_url" />
+        </column>
+      </row>
+    </scroll>
+  </if>
+  <else>
+    <!-- The list of articles -->
+    <row padding="12" gap="8" cross="center">
+      <text size="heading" grow="1">Long-form</text>
+      <button size="sm" variant="outline" icon="refresh-cw" on-press="refresh" disabled="{isFetching}">Refresh</button>
+    </row>
+    <separator />
+    <scroll grow="1">
+      <column padding="8" gap="2">
+        <for each="visible" key="index" as="a">
+          <list-item on-press="open:{a.index}" label="{a.title}">
+            <column grow="1" gap="2" padding="4">
+              <text>{a.title}</text>
+              <if test="{a.hasSummary}">
+                <text foreground="text_muted">{a.summary}</text>
+              </if>
+              <text foreground="text_muted">{a.author} | {date(a.published)}</text>
+            </column>
+          </list-item>
+        </for>
+        <else>
+          <column padding="24" gap="4">
+            <if test="{isFetching}">
+              <text foreground="text_muted">Asking relays for articles...</text>
+            </if>
+            <else>
+              <text foreground="text_muted">Nothing saved yet. Press Refresh to ask the relays again.</text>
+            </else>
+          </column>
+        </else>
+      </column>
+    </scroll>
+  </else>
+  <status-bar>{status}</status-bar>
 </column>
