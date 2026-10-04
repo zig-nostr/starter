@@ -180,7 +180,7 @@ test "the list shows the saved articles, by the date they were published" {
     _ = try expectByLabel(tree.root, .list_item, "Edited old essay");
     try testing.expect(hasTextContaining(tree.root, "2023-11-14"));
     try testing.expect(hasTextContaining(tree.root, "2001-09-09"));
-    _ = try expectByText(tree.root, .status_bar, "2 articles saved");
+    _ = try expectByText(tree.root, .status_bar, "2 articles listed");
 }
 
 test "an article with no title tag is listed by its first line" {
@@ -245,6 +245,13 @@ test "the list never holds more than its capacity" {
     loadModel(&rig, model);
 
     try testing.expectEqual(@as(usize, display.list_cap), model.row_count);
+    // More are saved than are listed, and the status line counts what the
+    // list holds, not what the database does.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var expected_buf: [32]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_buf, "{d} articles listed", .{display.list_cap});
+    try testing.expectEqualStrings(expected, model.status(arena_state.allocator()));
 }
 
 test "an empty list says what it is waiting for" {
@@ -318,7 +325,7 @@ test "the status line counts relays that answered, not relays that are listed" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    try testing.expectEqualStrings("0 articles saved", model.status(arena));
+    try testing.expectEqualStrings("0 articles listed", model.status(arena));
 
     var store: relays.Store = undefined;
     const urls = [_][]const u8{ "ws://a:1", "ws://b:1", "ws://c:1" };
@@ -326,15 +333,15 @@ test "the status line counts relays that answered, not relays that are listed" {
     var data = data_mod.Data.init(&store, &fetcher);
     model.data = &data;
 
-    try testing.expectEqualStrings("0 articles saved | 0 of 3 relays answered", model.status(arena));
+    try testing.expectEqualStrings("0 articles listed | 0 of 3 relays answered", model.status(arena));
 
     fetcher.set(0, .done);
     fetcher.set(1, .reading);
-    try testing.expectEqualStrings("0 articles saved | asking relays, 1 of 3 answered", model.status(arena));
+    try testing.expectEqualStrings("0 articles listed | asking relays, 1 of 3 answered", model.status(arena));
 
     fetcher.set(1, .failed);
     fetcher.set(2, .failed);
-    try testing.expectEqualStrings("0 articles saved | 1 of 3 relays answered, 2 unreachable", model.status(arena));
+    try testing.expectEqualStrings("0 articles listed | 1 of 3 relays answered, 2 unreachable", model.status(arena));
 }
 
 // -- reading ----------------------------------------------------------------

@@ -121,24 +121,26 @@ pub const Model = struct {
         return model.pages.count > 1;
     }
 
-    /// One line at the bottom of the window: what is saved, and how the
-    /// relays are doing. "Answered" counts relays that sent their stored
-    /// events, not relays that are merely in the list.
+    /// One line at the bottom of the window: how many articles the list
+    /// holds, and how the relays are doing. The count is the list's, which
+    /// stops at `display.list_cap`, not the database's, which can hold more.
+    /// "Answered" counts relays that sent their stored events, not relays
+    /// that are merely in the list.
     pub fn status(model: *const Model, arena: std.mem.Allocator) []const u8 {
-        const saved = model.row_count;
-        const noun = if (saved == 1) "article" else "articles";
-        const only_saved = std.fmt.allocPrint(arena, "{d} {s} saved", .{ saved, noun }) catch "";
-        const data = model.data orelse return only_saved;
+        const listed = model.row_count;
+        const noun = if (listed == 1) "article" else "articles";
+        const only_listed = std.fmt.allocPrint(arena, "{d} {s} listed", .{ listed, noun }) catch "";
+        const data = model.data orelse return only_listed;
         const tally = data.progress();
         // No relays to ask, so there is nothing to report about them.
-        if (tally.total == 0) return only_saved;
+        if (tally.total == 0) return only_listed;
         if (tally.working > 0) {
-            return std.fmt.allocPrint(arena, "{d} {s} saved | asking relays, {d} of {d} answered", .{ saved, noun, tally.answered, tally.total }) catch "";
+            return std.fmt.allocPrint(arena, "{d} {s} listed | asking relays, {d} of {d} answered", .{ listed, noun, tally.answered, tally.total }) catch "";
         }
         if (tally.failed > 0) {
-            return std.fmt.allocPrint(arena, "{d} {s} saved | {d} of {d} relays answered, {d} unreachable", .{ saved, noun, tally.answered, tally.total, tally.failed }) catch "";
+            return std.fmt.allocPrint(arena, "{d} {s} listed | {d} of {d} relays answered, {d} unreachable", .{ listed, noun, tally.answered, tally.total, tally.failed }) catch "";
         }
-        return std.fmt.allocPrint(arena, "{d} {s} saved | {d} of {d} relays answered", .{ saved, noun, tally.answered, tally.total }) catch "";
+        return std.fmt.allocPrint(arena, "{d} {s} listed | {d} of {d} relays answered", .{ listed, noun, tally.answered, tally.total }) catch "";
     }
 
     pub fn isFetching(model: *const Model) bool {
